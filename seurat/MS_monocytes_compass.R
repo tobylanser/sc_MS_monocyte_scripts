@@ -18,6 +18,8 @@ compass_settings <- CompassSettings$new(
   cell_id_col_name = "Name"
 )
 
+
+
 compass_settings$metabolite_metadata_path
 compass_settings$cell_metadata_path <- "compass_input/myeloidmeta_data.csv"
 compass_settings$compass_reaction_scores_path <- "COMPASS_outs/reactions.tsv"
