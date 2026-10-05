@@ -1,0 +1,1372 @@
+library(Seurat)
+#library(SeuratData)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(arrow)
+library(sctransform)
+library(openxlsx)
+library(BiocParallel)
+register(MulticoreParam(14))
+options(future.globals.maxSize = 8e+09)
+library(MAST)
+library(harmony)
+library(reticulate)
+library(BPCells)
+library(RColorBrewer)
+library(SeuratWrappers)
+# library(Azimuth)
+library(Matrix)
+library(car)
+library(scater)
+library(ggrepel)
+# options(Seurat.object.assay.version = "v5")
+library(paletteer)
+library(nichenetr)
+library(tidyverse)
+library(circlize)
+library(ggpubr)
+library(VennDiagram)
+library(pheatmap)
+library(gplots)
+library(GOplot)
+library(readr)
+library(robustbase)
+library(EnhancedVolcano)
+library(alluvial)
+library(reshape2)
+library(scico)
+library(ggsci)
+library(rcartocolor)
+library(ggside)
+library(viridis)
+library(ggstatsplot)
+library(grid)
+library(shadowtext)
+library(tidyr)
+library(DropletUtils)
+
+
+setwd("/media/patrick/GERVAZIO/Bioinfo/weiner_lab/public_data/MS/scRNaseq_spatial_lerma-martin_et_al/spatial/")
+
+##################               Visium 
+####      V1
+
+# setwd("/media/patrick/GERVAZIO/Bioinfo/weiner_lab/public_data/MS/snRNAseq_fagiani_el.al_2025/spaceranger/GSE277435_RAW/GSM8522424/")
+# m <- Read10X(data.dir = "/media/patrick/GERVAZIO/Bioinfo/weiner_lab/public_data/MS/snRNAseq_fagiani_el.al_2025/spaceranger/GSE277435_RAW/GSM8522424/filtered_feature_bc_matrix/")
+# 
+# # 2. Write out as 10x HDF5
+# DropletUtils::write10xCounts(
+#   # file       = "filtered_feature_bc_matrix.h5",
+#   path = "/media/patrick/GERVAZIO/Bioinfo/weiner_lab/public_data/MS/snRNAseq_fagiani_el.al_2025/spaceranger/GSE277435_RAW/GSM8522424/filtered_feature_bc_matrix.h5",
+#   x          = m,
+#   type       = "HDF5",
+#   version    = "3",          # 3 for feature-barcode format
+#   overwrite  = TRUE,
+#   gene.id    = rownames(m),
+#   gene.symbol = rownames(m)  # or your gene symbols if different
+# )
+# 
+# V1 <- Load10X_Spatial(data.dir = "/media/patrick/GERVAZIO/Bioinfo/weiner_lab/public_data/MS/snRNAseq_fagiani_el.al_2025/spaceranger/GSE277435_RAW/GSM8522424/")
+# gc()
+
+
+######################   merging all slides
+
+file.dir <- "../spaceranger/"
+data.list <- c()
+# meta1 <- read.delim("meta.txt", header = T)
+
+files.set <- c(
+  "GSM8563697_CO37",
+  "GSM8563698_CO40",
+  "GSM8563699_CO41",
+  "GSM8563700_CO74",
+  "GSM8563701_CO85",
+  "GSM8563702_CO96",
+  "GSM8563703_MS94",
+  "GSM8563704_MS197D",
+  "GSM8563705_MS197U",
+  "GSM8563706_MS229",
+  "GSM8563707_MS377N",
+  "GSM8563708_MS377T",
+  "GSM8563709_MS377I",
+  "GSM8563710_MS411",
+  "GSM8563711_MS497I",
+  "GSM8563712_MS497T",
+  "GSM8563713_MS549H",
+  "GSM8563714_MS549T")
+
+for (i in 1:length(files.set)) {
+  path1 <- paste0(file.dir, files.set[i],"/filtered_feature_bc_matrix/")
+  m <- Read10X(data.dir = path1)
+  path2 <- paste0(file.dir, files.set[i],"/filtered_feature_bc_matrix.h5")
+  DropletUtils::write10xCounts(
+    path = path2,
+    x          = m,
+    type       = "HDF5",
+    version    = "3",          # 3 for feature-barcode format
+    overwrite  = TRUE,
+    gene.id    = rownames(m),
+    gene.symbol = rownames(m)  # or your gene symbols if different
+  )
+  dataset_name <- files.set[i]
+  path3 <- paste0(file.dir, files.set[i])
+  mat <- Load10X_Spatial(data.dir = path3) %>% NormalizeData() %>% FindVariableFeatures() %>% ScaleData()
+  mat$sample <- dataset_name
+  data.list[[i]] <- mat
+  rm(mat)
+  rm(m)
+  gc()
+}
+# Name layers
+names(data.list) <- files.set
+
+# Merge layers and create seurat obj during merging 
+features <- SelectIntegrationFeatures(object.list = data.list, nfeatures = 3000)
+prot.combined <- merge(data.list[[1]], y = data.list[2:length(data.list)], 
+                       add.cell.ids = files.set, merge.data = T
+)
+rm(data.list)
+gc()
+
+VariableFeatures(prot.combined) <- features
+
+### Normalize and scale merged obj
+# prot.combined <- NormalizeData(prot.combined, normalization.method = "LogNormalize")
+prot.combined <- FindVariableFeatures(prot.combined, selection.method = "vst", nfeatures = 3000)
+prot.combined <- ScaleData(prot.combined #, vars.to.regress = c("percent.mt","nCount_RNA"), model.use = "linear" #latent.data = "nFeature_RNA", 
+)#, features = all.genes)
+gc()
+### Identify the 10 most highly variable genes
+#top10 <- head(VariableFeatures(prot.combined), 10)
+
+### plot variable features with and without labels
+#plot1 <- VariableFeaturePlot(prot.combined, raster = F)
+#plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE, raster = F)
+#plot1 + plot2
+
+### Dimensionality reduction and integration
+prot.combined <- RunPCA(prot.combined, npcs = 50)
+gc()
+ElbowPlot(prot.combined, ndims = 50)
+prot.combined <- FindNeighbors(prot.combined, dims = 1:40, reduction = "pca")
+prot.combined <- FindClusters(prot.combined, resolution = 1, cluster.name = "unintegrated_clusters"#,algorithm = "leiden"
+)
+prot.combined <- RunUMAP(prot.combined, #umap.method = "umap-learn", 
+                         dims = 1:40, reduction = "pca", reduction.name = "umap")
+gc()
+
+DimPlot(prot.combined, reduction = "umap", label = T, raster = T, pt.size = 3., 
+        split.by = "pathology", group.by = "SDC2_status") # + ggtitle("Projected clustering (full dataset)") + theme(legend.position = "bottom")
+
+FeaturePlot(prot.combined, features = "SDC2", raster = F)
+
+SpatialDimPlot(prot.combined, label = T, repel = T, label.size = 4, 
+               images = "slice1")
+
+prot.combined[["Spatial"]] <- JoinLayers(prot.combined[["Spatial"]])
+SDC2_expr <- GetAssayData(prot.combined, layer = "counts")["SDC2", ]
+LPCAT1_expr <- GetAssayData(prot.combined, layer = "counts")["LPCAT1", ]
+AQP4_expr <- GetAssayData(prot.combined, layer = "counts")["AQP4", ]
+prot.combined <- AddMetaData(prot.combined,
+                             metadata = ifelse(SDC2_expr > 0 & LPCAT1_expr > 0, "SDC2+LPCAT1+", "SDC2-LPCAT1-"),
+                             col.name = "SDC2_status")
+table(prot.combined$SDC2_status)
+
+Idents(prot.combined) <- "SDC2_status"
+cells <- CellsByIdentities(prot.combined, idents = "SDC2+LPCAT1+")
+
+p1 <- SpatialDimPlot(prot.combined, #image.scale = "hires",
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1") ## CWM
+) + NoLegend()
+p2 <- SpatialDimPlot(prot.combined, #image.scale = "hires",
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1.2") ## CWM
+) + NoLegend()
+p3 <- SpatialDimPlot(prot.combined,
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1.3") ## CWM
+) + NoLegend()
+p4 <- SpatialDimPlot(prot.combined,
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T,
+                     combine = T, images = c("slice1.4") ## CWM
+) + NoLegend()
+p5 <- SpatialDimPlot(prot.combined,
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1.5") ## CWM
+) + NoLegend()
+p6 <- SpatialDimPlot(prot.combined,
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1.6")  ## CWM
+) + NoLegend()
+
+p7 <- SpatialDimPlot(prot.combined,
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1.7")  ## CA
+) + NoLegend()
+p8 <- SpatialDimPlot(prot.combined,
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1.8")  ## CA
+) + NoLegend()
+p9 <- SpatialDimPlot(prot.combined,
+                     cells.highlight = cells[setdiff(names(cells), "NA")],
+                     cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                     combine = T, images = c("slice1.9")  ## CA
+) + NoLegend()
+p10 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                      combine = T, images = c("slice1.10") ## CA
+) + NoLegend()
+p11 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                      combine = T, images = c("slice1.11") ## CA
+) + NoLegend()
+p12 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                      combine = T, images = c("slice1.12") ## CA
+) + NoLegend()
+p13 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T,
+                      combine = T, images = c("slice1.13") ## CA
+) + NoLegend()
+p14 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, 
+                      combine = T, images = c("slice1.14") ## CA
+) + NoLegend()
+
+p15 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T,
+                      combine = T, images = c("slice1.15") ## CI
+) + NoLegend()
+p16 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T,
+                      combine = T, images = c("slice1.16") ## CI
+) + NoLegend()
+p17 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T,
+                      combine = T, images = c("slice1.17") ## CI
+) + NoLegend()
+p18 <- SpatialDimPlot(prot.combined,
+                      cells.highlight = cells[setdiff(names(cells), "NA")],
+                      cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T,
+                      combine = T, images = c("slice1.18") ## CI
+) + NoLegend()
+
+(p1 + p2 + p3 + p5 + p6 + # CWM
+  p8 + p9 + p11 + p13 + #CA
+  p17) + # CI 
+  plot_layout(nrow = 2, ncol = 5, guides = 'collect')
+
+
+
+SpatialFeaturePlot(prot.combined, features = c("SDC2")
+                   ,slot = "data", images = "slice1.12"
+)
+
+# Idents(prot.combined) <- "SDC2.pos"
+Idents(prot.combined) <- "SDC2_status"
+my_comparisons <- list(c("CTRL","CA"),c("CTRL","CI"),c("CA","CI"))
+colors <- brewer.pal(n=8,name = "Dark2")
+colors <- colors[c(1,3,2)]
+
+gene <- "LPCAT1"
+p1 <- VlnPlot(prot.combined, features = gene,
+              pt.size = 0.05, raster = F, group.by = "pathology", cols = colors,
+              # idents = c("16","13","19","2")
+              # idents = c("pos")
+              # idents = c("SDC2+LPCAT1+")
+              # idents = c("16","13","19","2","26","21")
+              # idents = c("Astrocytes")
+              # idents = c("CD8+ T cells")
+              # idents = c("mNK")
+              # idents = c("Classical")
+) + theme(legend.position = "none") + xlab("")
+p1 <- p1 + stat_summary(fun = mean, geom='point', size = 20, colour = "black", shape = 95) +
+  scale_y_continuous(limits = c(0.00001, max(p1[[1]][["data"]][[gene]])+0.3*max(p1[[1]][["data"]][[gene]]))) +
+  stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", label = "p.format") #+ # Add pairwise comparisons p-value
+p1$layers[[2]]$aes_params$alpha <- 0.07
+p1
+
+clus4.markers <- c("SDC2","PTGS2","HBEGF","IL1B","FOSL2","PPIF","GPR183","RGCC", "TRIB1", "NFKB1","EGR1","NLRP3","EGR2","EGR3","CXCL8",  
+                   "G0S2")
+
+DotPlot(prot.combined, features = clus4.markers,
+        cols = "RdBu",
+        col.max = 20, 
+        dot.scale = 10, 
+        # idents = c("Microglia"),
+        cluster.idents = F, 
+        group.by = "pathology",
+        #scale = F,
+        #split.by = "disease"
+) + RotatedAxis() + coord_flip() + ylab("") + xlab("")
+
+
+
+## Add metadata
+meta <- read.delim("meta.txt", header = T)
+
+prot.combined$GEM <- sub("(.*)_.*", "\\1", prot.combined$sample)
+prot.combined$pathology <- prot.combined$GEM
+prot.combined$disease <- prot.combined$GEM
+prot.combined$age <- prot.combined$GEM
+prot.combined$sex <- prot.combined$GEM
+prot.combined$donor <- prot.combined$GEM
+prot.combined$sample2 <- prot.combined$GEM
+
+for (i in 1:length(meta$GEM)) {
+  prot.combined$sample2 <- recode(prot.combined$sample2, "meta$GEM[i] = meta$sample[i]")
+  prot.combined$pathology <- recode(prot.combined$pathology, "meta$GEM[i] = meta$Lesion.type[i]")
+  prot.combined$age <- recode(prot.combined$age, "meta$GEM[i] = meta$Age[i]")
+  prot.combined$sex <- recode(prot.combined$sex, "meta$GEM[i] = meta$Sex[i]")
+  prot.combined$disease <- recode(prot.combined$disease, "meta$GEM[i] = meta$Condition[i]")
+  prot.combined$donor <- recode(prot.combined$donor, "meta$GEM[i] = meta$patient[i]")
+}
+prot.combined$pathology <- factor(prot.combined$pathology, levels = c("CTRL","CA","CI"))
+
+
+## Save and Load V5 data
+saveRDS(object = prot.combined, file = "obj_unintegrated_merged.Rds")
+#rm(prot.combined)
+prot.combined <- readRDS("./obj_unintegrated_merged.Rds")
+
+
+
+## cell types annotation
+
+DotPlot(prot.combined, features = c( "GFAP","SLC1A3","AQP4","LCN2", "GJA1", "SLC1A2","FGFR3","NKAIN4",   #Astrocytes
+                                     "SDC2",
+                                     "FBLN1","FBLN5", # fibroblasts
+                                     "CHRM3", # cholinergic neurons
+                                     "TH","SLC18A2", # dopaminergic neurons
+                                     "TAGLN","MYH11", # vascular smooth muscle cells
+                                     "CFAP44","CFAP43", # ependymal cells
+                                     "SLC17A6","SLC17A7","NRGN","CAMK2A", "SATB2", "COL5A1","SDK2","NEFM","HTR2C",    #Excitatory_neurons
+                                     "SLC32A1","GAD1","GAD2","TAC1","PENK","SST","NPY","MYBPC1","PVALB","GABBR2",   #Inhibitory_neurons
+                                     "OLIG2", "MBP","MOBP","PLP1","MOG","CLDN11","MYRF","GALC","ERMN","MAG",   #Oligodendrocytes
+                                     "VCAN","CSPG4","PDGFRA", "SOX10","NEU4", "PCDH15","GPR37L1","C1QL1","CDO1","EPN2",   #Oligodendrocyte_precursor_cells
+                                     "AMBP","HIGD1B","COX4I2", "AOC3","PDE5A","PTH1R","P2RY14","ABCC9","KCNJ8","CD248",  #Pericytes
+                                     "FLT1","CLDN5", "VTN","ITM2A", "VWF", "FAM167B","BMX","CLEC1B",    #Endothelial_cells
+                                     "P2RY12","CSF1R","C3","APOE","CD74","CST3","HEXB", "C1QA", "CX3CR1","TMEM119","SLC2A5","AIF1","IL1B","IRF8",   #Microglia
+                                     "MS4A4A","CD163","MAFB","TNFAIP2","IL15","ASAH1","PLA2G7", "PLXND1","EMILIN2","SIGLEC1","F13A1","MARCO","GAS7","GDA", # monocytes
+                                     "CD68", #"CD14","FCGR3A","FCGR1A","TFRC","CCR5","ITGAM","CCR2","HP","SELL", #Macrophages
+                                     "CD8A","CD4","CD3E","CD3D","CD19","CD22","IGKC","PTPRC","CD27"
+),
+col.max = 20, 
+dot.scale = 10, 
+cluster.idents = T, 
+# group.by = "type_broad",
+#scale = F,
+#split.by = "cohort"
+) + RotatedAxis() + ylab("") + xlab("")
+
+
+
+
+
+
+
+
+
+
+prot.combined[["Spatial"]] <- JoinLayers(prot.combined[["Spatial"]])
+
+SDC2.pos <- WhichCells(prot.combined, expression = SDC2 > 0 & AIF1 > 0 &  AQP4 == 0, slot = "counts")
+prot.combined$SDC2.pos <- colnames(prot.combined) %in% SDC2.pos
+table(prot.combined$SDC2.pos)
+
+prot.combined$lesion_SDC2 <- paste(prot.combined$pathology, prot.combined$SDC2.pos, sep = "_")
+
+
+SDC2_expr <- GetAssayData(prot.combined, layer = "counts")["AIF1", ]
+GFAP_expr <- GetAssayData(prot.combined, layer = "counts")["GFAP", ]
+prot.combined <- AddMetaData(prot.combined,
+                             metadata = ifelse(SDC2_expr > 0 & GFAP_expr == 0, "pos", "neg"),
+                             col.name = "SDC2_status")
+
+
+
+Idents(prot.combined) <- "SDC2.pos"
+cells <- CellsByIdentities(prot.combined, idents = c("TRUE"))
+SpatialDimPlot(prot.combined,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T, images = "slice1.14",
+) + NoLegend()
+
+
+
+
+
+
+
+# 
+# prot.combined2 <- subset(prot.combined, subset = SDC2 > 0.1)
+
+Idents(prot.combined) <- "SDC2_status"
+
+zk.response0 <- FindMarkers(prot.combined, ident.1 = "pos",
+                            ident.2 = "neg",
+                            slot = "data",
+                            assay = "Spatial",
+                            features = NULL,
+                            logfc.threshold = 0,
+                            test.use = "wilcox",
+                            min.pct = 0.0,
+                            min.diff.pct = -Inf,
+                            verbose = TRUE,
+                            only.pos = FALSE,
+                            max.cells.per.ident = Inf,
+                            random.seed = 1,
+                            latent.vars = NULL,
+                            min.cells.feature = 3,
+                            min.cells.group = 3,
+                            pseudocount.use = 1,
+                            mean.fxn = NULL,
+                            fc.name = NULL,
+                            base = 2,
+                            densify = FALSE,
+                            recorrect_umi = TRUE
+)
+# zk.response0 <- zk.response0[zk.response0$p_val_adj < 0.1,]
+write.xlsx(as.data.frame(zk.response0), rowNames = T,file="wilcox_SDC2_pos_x_neg_DEGs.xlsx")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+# DefaultAssay(V1) <- "Spatial.008um"
+vln.plot <- VlnPlot(V1, features = "nCount_Spatial", pt.size = 0) + theme(axis.text = element_text(size = 10)) + NoLegend()
+count.plot <- SpatialFeaturePlot(V1, features = "nCount_Spatial") + theme(legend.position = "right")
+# note that many spots have very few counts, in-part
+# due to low cellular density in certain tissue regions
+vln.plot | count.plot
+
+# DefaultAssay(V1) <- "Spatial.008um"
+V1 <- NormalizeData(V1)
+gc()
+
+# switch spatial resolution to 2um from 8um
+DefaultAssay(CT1_A1) <- "Spatial.002um"
+p1 <- SpatialFeaturePlot(CT1_A1, features = "Apoe", min.cutoff = 5, max.cutoff = 8) + ggtitle("Apoe expression (2um)")
+p1
+# switch back to 8um
+DefaultAssay(CT1_A1) <- "Spatial.008um"
+p2 <- SpatialFeaturePlot(CT1_A1, features = "Apoe") + ggtitle("Apoe expression (8um)")
+p1 | p2
+
+## Unsupervised clustering
+DefaultAssay(CT1_A1) <- "Spatial.008um"
+CT1_A1 <- FindVariableFeatures(CT1_A1)
+CT1_A1 <- ScaleData(CT1_A1)
+gc()
+# we select 50,0000 cells and create a new 'sketch' assay
+CT1_A1 <- SketchData(
+  object = CT1_A1,
+  ncells = 50000,
+  method = "LeverageScore",
+  sketched.assay = "sketch"
+)
+gc()
+
+# switch analysis to sketched cells
+DefaultAssay(CT1_A1) <- "sketch"
+
+# perform clustering workflow
+CT1_A1 <- FindVariableFeatures(CT1_A1)
+CT1_A1 <- ScaleData(CT1_A1)
+CT1_A1 <- RunPCA(CT1_A1, assay = "sketch", reduction.name = "pca.sketch")
+ElbowPlot(CT1_A1, ndims = 50, reduction = "pca.sketch")
+gc()
+CT1_A1 <- FindNeighbors(CT1_A1, assay = "sketch", reduction = "pca.sketch", dims = 1:50)
+CT1_A1 <- FindClusters(CT1_A1, cluster.name = "seurat_cluster.sketched", resolution = 3)
+CT1_A1 <- RunUMAP(CT1_A1, reduction = "pca.sketch", reduction.name = "umap.sketch", return.model = T, dims = 1:50)
+gc()
+
+CT1_A1 <- ProjectData(
+  object = CT1_A1,
+  assay = "Spatial.008um",
+  full.reduction = "full.pca.sketch",
+  sketched.assay = "sketch",
+  sketched.reduction = "pca.sketch",
+  umap.model = "umap.sketch",
+  dims = 1:50,
+  refdata = list(seurat_cluster.projected = "seurat_cluster.sketched")
+)
+gc()
+
+DefaultAssay(CT1_A1) <- "sketch"
+Idents(CT1_A1) <- "seurat_cluster.sketched"
+p1 <- DimPlot(CT1_A1, reduction = "umap.sketch", label = F) + ggtitle("Sketched clustering (50,000 cells)") + theme(legend.position = "bottom")
+
+# switch to full dataset
+DefaultAssay(CT1_A1) <- "Spatial.008um"
+Idents(CT1_A1) <- "seurat_cluster.projected"
+p2 <- DimPlot(CT1_A1, reduction = "full.umap.sketch", label = T, raster = F) + ggtitle("Projected clustering (full dataset)") + theme(legend.position = "right")
+p2
+FeaturePlot(CT1_A1, features = "Apoe", raster = F)
+p1 | p2
+
+SpatialDimPlot(CT1_A1, label = T, repel = T, label.size = 4)
+
+# Save and Load data
+saveRDS(object = CT1_A1, file = "obj_CT1_A1.Rds")
+#rm(prot.combined)
+CT1_A1 <- readRDS("./obj_CT1_A1.Rds")
+
+DotPlot(CT1_A1, features = c( "Apoe",
+                              "Gfap", "Aqp4", "Lcn2", "Gja1", "Slc1a2", "Fgfr3", "Nkain4",   #astrocytes
+                              "Flt1", "Cldn5", "Vtn", "Itm2a", "Vwf", "Fam167b", "Bmx", "Clec1b",    #endothelial_cells
+                              "Slc17a6",  "Slc17a7",  "Nrgn", "Camk2a", "Satb2", "Col5a1", "Sdk2", "Nefm",    #excitatory_neurons
+                              "Slc32a1",  "Gad1", "Gad2", "Tac1", "Penk", "Sst",  "Npy",  "Mybpc1", "Pvalb", "Gabbr2",   #inhibitory_neurons
+                              "P2ry12", "Csf1r",  "Cd74", "C3", "Cst3", "Hexb", "C1qa", "Cx3cr1", "Aif1", "Tmem119",  #microglia
+                              "Olig2",  "Mbp",  "Mobp", "Plp1", "Mog",  "Cldn11", "Myrf", "Galc", "Ermn", "Mag",   #oligodendrocytes
+                              "Vcan", "Cspg4", "Pdgfra", "Sox10", "Neu4", "Pcdg15", "Gpr37l1", "C1ql1", "Cdo1", "Epn2",   #oligodendrocyte_precursor_cells
+                              "Ambp",  "Higd1b", "Cox4i2", "Aoc3", "Pde5a",  "Pth1r",  "P2ry14", "Abcc9", "Kcnj8", "Cd248", #Pericytes
+                              "Ccr2","Cd68","Cd11b","Cd14","Fcgr3", #monocytes
+                              "Ccr5","Itgam","Trfc","Fcgr1" #macrophage
+                              
+),
+col.max = 20,
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+#scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+Idents(CT1_A1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(CT1_A1, idents = c(0:8))
+p <- SpatialDimPlot(CT1_A1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+### astrocytes
+Idents(CT1_A1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(CT1_A1, idents = c(34,7,18,32))
+p <- SpatialDimPlot(CT1_A1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+### myeloids
+Idents(CT1_A1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(CT1_A1, idents = c(17,29,49))
+p <- SpatialDimPlot(CT1_A1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+# ggsave(filename = "CT1_A1_spatial_feat_clus0-8.png",
+#        plot = p,
+#        width = 10,
+#        height = 10,
+#        dpi = 600,
+#        device = "png")
+
+## find and visualize the top gene expression markers for each cluster
+# Create downsampled object to make visualization either
+DefaultAssay(CT1_A1) <- "Spatial.008um"
+Idents(CT1_A1) <- "seurat_cluster.projected"
+object_subset <- subset(CT1_A1, cells = Cells(CT1_A1[["Spatial.008um"]]), downsample = 1000)
+
+# Order clusters by similarity
+DefaultAssay(object_subset) <- "Spatial.008um"
+Idents(object_subset) <- "seurat_cluster.projected"
+object_subset <- BuildClusterTree(object_subset, assay = "Spatial.008um", reduction = "full.pca.sketch", reorder = T)
+
+markers <- FindAllMarkers(object_subset, assay = "Spatial.008um", only.pos = TRUE) %>%
+  group_by(cluster) #%>%
+# dplyr::filter(avg_log2FC > 1)%>%
+# slice_head(n = 50)
+write.xlsx(as.data.frame(markers), rowNames = T, file="wilcox_clus_all_markers_IPSI_50pcs_res3.xlsx")
+markers <- FindAllMarkers(object_subset, assay = "Spatial.008um", only.pos = TRUE)
+markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top5
+
+object_subset <- ScaleData(object_subset, assay = "Spatial.008um", features = top5$gene)
+p <- DoHeatmap(object_subset, assay = "Spatial.008um", features = top5$gene, size = 2.5) + theme(axis.text = element_text(size = 5.5)) #+ NoLegend()
+p
+
+ggsave(filename = "CT1_A1_heat_top10.png",
+       plot = p,
+       width = 20,
+       height = 20,
+       dpi = 600,
+       device = "png")
+
+
+
+
+
+### IPSI separately
+
+IPSI_D1 <- Load10X_Spatial(data.dir = "/media/patrick/JANELSO/Bioinfo/weiner_lab/GENESIO/izzy/visium_cancer_joe/spaceranger/IPSI_D1/outs/", bin.size = c(2, 8, 16))
+Assays(IPSI_D1)
+gc()
+
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+vln.plot <- VlnPlot(IPSI_D1, features = "nCount_Spatial.008um", pt.size = 0) + theme(axis.text = element_text(size = 10)) + NoLegend()
+count.plot <- SpatialFeaturePlot(IPSI_D1, features = "nCount_Spatial.008um") + theme(legend.position = "right")
+# note that many spots have very few counts, in-part
+# due to low cellular density in certain tissue regions
+vln.plot | count.plot
+
+DefaultAssay(IPSI_D1) <- "Spatial.002um"
+IPSI_D1 <- NormalizeData(IPSI_D1)
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+IPSI_D1 <- NormalizeData(IPSI_D1)
+DefaultAssay(IPSI_D1) <- "Spatial.016um"
+IPSI_D1 <- NormalizeData(IPSI_D1)
+gc()
+
+# switch spatial resolution to 2um from 8um
+DefaultAssay(IPSI_D1) <- "Spatial.002um"
+p1 <- SpatialFeaturePlot(IPSI_D1, features = "Apoe", slot = "counts") + ggtitle("Apoe expression (2um)")
+p1
+# switch back to 8um
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+p2 <- SpatialFeaturePlot(IPSI_D1, features = "Apoe", slot = "counts") + ggtitle("Apoe expression (8um)")
+p2
+p1 | p2
+
+## Unsupervised clustering
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+IPSI_D1 <- FindVariableFeatures(IPSI_D1)
+gc()
+IPSI_D1 <- ScaleData(IPSI_D1)
+gc()
+# we select 50,0000 cells and create a new 'sketch' assay
+IPSI_D1 <- SketchData(
+  object = IPSI_D1,
+  ncells = 50000,
+  method = "LeverageScore",
+  sketched.assay = "sketch"
+)
+gc()
+
+# switch analysis to sketched cells
+DefaultAssay(IPSI_D1) <- "sketch"
+
+# perform clustering workflow
+IPSI_D1 <- FindVariableFeatures(IPSI_D1)
+IPSI_D1 <- ScaleData(IPSI_D1)
+IPSI_D1 <- RunPCA(IPSI_D1, assay = "sketch", reduction.name = "pca.sketch")
+ElbowPlot(IPSI_D1, ndims = 50, reduction = "pca.sketch")
+gc()
+IPSI_D1 <- FindNeighbors(IPSI_D1, assay = "sketch", reduction = "pca.sketch", dims = 1:50)
+IPSI_D1 <- FindClusters(IPSI_D1, cluster.name = "seurat_cluster.sketched", resolution = 3)
+IPSI_D1 <- RunUMAP(IPSI_D1, reduction = "pca.sketch", reduction.name = "umap.sketch", return.model = T, dims = 1:50)
+gc()
+
+IPSI_D1 <- ProjectData(
+  object = IPSI_D1,
+  assay = "Spatial.008um",
+  full.reduction = "full.pca.sketch",
+  sketched.assay = "sketch",
+  sketched.reduction = "pca.sketch",
+  umap.model = "umap.sketch",
+  dims = 1:50,
+  refdata = list(seurat_cluster.projected = "seurat_cluster.sketched")
+)
+gc()
+
+DefaultAssay(IPSI_D1) <- "sketch"
+Idents(IPSI_D1) <- "seurat_cluster.sketched"
+p1 <- DimPlot(IPSI_D1, reduction = "umap.sketch", label = F) + ggtitle("Sketched clustering (50,000 cells)") + theme(legend.position = "bottom")
+
+# switch to full dataset
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+p2 <- DimPlot(IPSI_D1, reduction = "full.umap.sketch", label = T, raster = F) + ggtitle("Projected clustering (full dataset)") + theme(legend.position = "right")
+p2
+FeaturePlot(IPSI_D1, features = "Apoe", raster = F)
+p1 | p2
+
+SpatialDimPlot(IPSI_D1, label = T, repel = T, label.size = 4)
+
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+SpatialFeaturePlot(IPSI_D1, features = c("Apoe")
+                   ,slot = "data"
+)
+
+# Save and Load data
+saveRDS(object = IPSI_D1, file = "obj_IPSI_D1.Rds")
+#rm(prot.combined)
+IPSI_D1 <- readRDS("./obj_IPSI_D1.Rds")
+
+
+
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(0:8))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+# ggsave(filename = "IPSI_D1_spatial_feat_clus0-8.png",
+#        plot = p,
+#        width = 10,
+#        height = 10,
+#        dpi = 600,
+#        device = "png")
+
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(9:17))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(18:26))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(27:35))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(36:44))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(45:52))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(12,25,13,37))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+cells <- CellsByIdentities(IPSI_D1, idents = c(7,22,16,13,20,15,23,11,37))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+cells <- CellsByIdentities(IPSI_D1, idents = c(12,25,13,37))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+
+### astrocytes
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(7,22,42,16))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+### myeloids
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(IPSI_D1, idents = c(12,25,13,36))
+p <- SpatialDimPlot(IPSI_D1,
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+## find and visualize the top gene expression markers for each cluster
+# Create downsampled object to make visualization either
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+Idents(IPSI_D1) <- "seurat_cluster.projected"
+object_subset <- subset(IPSI_D1, cells = Cells(IPSI_D1[["Spatial.008um"]]), downsample = 1000)
+
+# Order clusters by similarity
+DefaultAssay(object_subset) <- "Spatial.008um"
+Idents(object_subset) <- "seurat_cluster.projected"
+object_subset <- BuildClusterTree(object_subset, assay = "Spatial.008um", reduction = "full.pca.sketch", reorder = T)
+
+markers <- FindAllMarkers(object_subset, assay = "Spatial.008um", only.pos = TRUE) %>%
+  group_by(cluster) #%>%
+# dplyr::filter(avg_log2FC > 1)%>%
+# slice_head(n = 50)
+write.xlsx(as.data.frame(markers), rowNames = T, file="wilcox_clus_all_markers_IPSI_50pcs_res3.xlsx")
+markers <- FindAllMarkers(object_subset, assay = "Spatial.008um", only.pos = TRUE)
+markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top5
+
+object_subset <- ScaleData(object_subset, assay = "Spatial.008um", features = top5$gene)
+p <- DoHeatmap(object_subset, assay = "Spatial.008um", features = top5$gene, size = 2.5) + theme(axis.text = element_text(size = 5.5)) #+ NoLegend()
+ggsave(filename = "IPSI_D1_heat_top10_HD.png",
+       plot = p,
+       width = 30,
+       height = 30,
+       #dpi = 600,
+       device = "png")
+
+
+# Astrocytes <- c("Gfap", "EAAT1", "AQP4", "LCN2", "GJA1", "SLC1A2", "FGFR3", "NKAIN4")
+# Excitatory_neurons <- c("SLC17A6",  "SLC17A7",  "NRGN", "CAMK2A", "SATB2", "COL5A1", "SDK2", "NEFM")
+# Inhibitory_neurons <- c("SLC32A1",  "GAD1", "GAD2", "TAC1", "PENK", "SST",  "NPY",  "MYBPC1", "PVALB", "GABBR2")
+# Microglia <- c("IBA-1", "P2RY12", "CSF1R",  "CD74", "C3", "CST3", "HEXB", "C1QA", "CX3CR1", "AIF-1")
+# Oligodendrocytes <- c("OLIG2",  "MBP",  "MOBP", "PLP1", "MOG",  "CLDN11", "MYRF", "GALC", "ERMN", "MAG")
+# Oligodendrocyte_precursor_cells <- c("VCAN", "CSPG4", "PDGFRA", "SOX10", "NEU4", "PCDG15", "GPR37L1", "C1QL1", "CDO1", "EPN2")
+# Macrophages <- c("CD14", "CD16", "CD64","CD71", "CCR5","Cc68", "Ccr2", "Cd11b")
+#Endothelial_cells <- c("FLT1", "CLDN5", "VTN", "ITM2A", "VWF", "FAM167B", "BMX", "CLEC1B")
+#Pericytes <- c("AMBP",  "HIGD1B", "COX4I2", "AOC3", "PDE5A",  "PTH1R",  "P2RY14", "ABCC9", "KCNJ8", "CD248")
+
+DotPlot(IPSI_D1, features = c( "Apoe",
+                               "Gfap", "Aqp4", "Lcn2", "Gja1", "Slc1a2", "Fgfr3", "Nkain4",   #astrocytes
+                               "Flt1", "Cldn5", "Vtn", "Itm2a", "Vwf", "Fam167b", "Bmx", "Clec1b",    #endothelial_cells
+                               "Slc17a6",  "Slc17a7",  "Nrgn", "Camk2a", "Satb2", "Col5a1", "Sdk2", "Nefm",    #excitatory_neurons
+                               "Slc32a1",  "Gad1", "Gad2", "Tac1", "Penk", "Sst",  "Npy",  "Mybpc1", "Pvalb", "Gabbr2",   #inhibitory_neurons
+                               "P2ry12", "Csf1r",  "Cd74", "C3", "Cst3", "Hexb", "C1qa", "Cx3cr1", "Aif1", "Tmem119",  #microglia
+                               "Olig2",  "Mbp",  "Mobp", "Plp1", "Mog",  "Cldn11", "Myrf", "Galc", "Ermn", "Mag",   #oligodendrocytes
+                               "Vcan", "Cspg4", "Pdgfra", "Sox10", "Neu4", "Pcdg15", "Gpr37l1", "C1ql1", "Cdo1", "Epn2",   #oligodendrocyte_precursor_cells
+                               "Ambp",  "Higd1b", "Cox4i2", "Aoc3", "Pde5a",  "Pth1r",  "P2ry14", "Abcc9", "Kcnj8", "Cd248", #Pericytes
+                               "Ccr2","Cd68","Cd11b","Cd14","Fcgr3", #monocytes
+                               "Ccr5","Itgam","Trfc","Fcgr1" #macrophage
+                               
+),
+#cols = c("blue","blue","blue"),#"green","yellow","gray","pink","brown","lightblue"), 
+col.max = 20, #idents = #c("Classical Mono_1_AD","Classical Mono_2_AD","Classical Mono_1_C","Classical Mono_2_C"),#"Intermediate Mono_AD","Nonclassical Mono_AD","Intermediate Mono_C","Nonclassical Mono_C"),
+#c("Classical Mono_1","Classical Mono_2","Intermediate Mono","Nonclassical Mono", 
+#"pDC_AD","pDC_C", 
+#"mo-DC_AD","mo-DC_C"
+#),
+#idents = "CD8+ TEM",
+# c("NK_4_C","NK_4_AD","NK_8_C","NK_8_AD","NK_21_C","NK_21_AD",
+#  "CD8+ NKT-like_C", "CD8+ NKT-like_AD"#, "NK_AD", "NK_C"
+# c("NK_AD","NK_C","Classical Mono_1_AD","Classical Mono_2_AD","Classical Mono_1_C","Classical Mono_2_C","Intermediate Mono_AD","Nonclassical Mono_AD","Intermediate Mono_C","Nonclassical Mono_C"
+#c("62","67","49","47"),
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+#scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+
+p1 <- VlnPlot(IPSI_D1, features = c("Apoe"),#c("JUN","STAT1", "CCL3", "CCL3L1"),#c("IRF1","IFNG","IFNGR1","IFNGR2"),#c("CD8A","CD4","CD19"),#c("TMEM176A","TMEM176B"), 
+              #split.by = "disease",
+              pt.size = 0.05,
+              raster = F,
+              #ncol = 1,
+              #group.by = "disease",
+              #slot = "counts",
+              #add.noise = F,
+              #log = T,
+              #sort = "increasing",
+              #idents = c("0","1","6","13","14","18") #endothelial
+              #c("24","26","30")#microglia
+) + scale_y_continuous(limits = c(0.000,8.5)) + #geom_boxplot(width=0.1, color="black", alpha=0.2) +
+  stat_summary(fun = mean, geom='point', size = 15, colour = "black", shape = 95)
+p1$layers[[2]]$aes_params$alpha <- 0.05
+p1
+
+###############################
+## astrocytes
+
+DotPlot(IPSI_D1, features = c( "Apoe",
+                               "Gfap", "Aqp4", "Lcn2", "Gja1", "Slc1a2", "Fgfr3", "Nkain4"   #astrocytes
+),
+col.max = 20, 
+idents = c("7","22","42","16"),
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+
+## myeloids
+
+DotPlot(IPSI_D1, features = c( "Apoe",
+                               "P2ry12", "Csf1r",  "Cd74", "C3", "Cst3", "Hexb", "C1qa", "Cx3cr1", "Aif1", "Tmem119",  #microglia
+                               "Ccr2","Cd68","Cd11b","Cd14","Fcgr3", #monocytes
+                               "Ccr5","Itgam","Trfc","Fcgr1" #macrophage                    
+),
+col.max = 20, 
+idents = c("12","25","13","36"),
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+# DoHeatmap(IPSI_D1, features = c( "Apoe",
+#                                   "P2ry12","Csf1r","Cd74","C3","Cst3","Hexb","C1qa","Aif1", "Tmem119",  #microglia
+#                                   "Ccr2","Cd68","Cd14","Fcgr3", #monocytes
+#                                   "Ccr5","Itgam","Fcgr1" #macrophage                    
+# ), 
+#           slot = "data",
+#           assay = "Spatial.008um",
+#           cells = 1:1000, 
+#           size = 2.5,
+#           #disp.max = 2.5,
+#           #disp.min = 0
+# )
+
+#### CT1
+# astrocytes
+
+DotPlot(CT1_A1, features = c( "Apoe",
+                              "Gfap", "Aqp4", "Lcn2", "Gja1", "Slc1a2", "Fgfr3", "Nkain4"  #astrocytes
+),
+col.max = 20, 
+idents = c("34","7","18","32"),
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+
+## myeloids
+
+DotPlot(CT1_A1, features = c( "Apoe",
+                              "P2ry12", "Csf1r",  "Cd74", "C3", "Cst3", "Hexb", "C1qa", "Cx3cr1", "Aif1", "Tmem119",  #microglia
+                              "Ccr2","Cd68","Cd11b","Cd14","Fcgr3", #monocytes
+                              "Ccr5","Itgam","Trfc","Fcgr1" #macrophage                    
+),
+col.max = 20, 
+idents = c("17","29","49"),
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+############# ##########   merging CT1 and IPSI    #####################################
+
+##################               Visium HD    ########################
+
+## Controlateral
+CT1_A1 <- Load10X_Spatial(data.dir = "/media/patrick/JANELSO/Bioinfo/weiner_lab/GENESIO/izzy/visium_cancer_joe/spaceranger/CT1_A1/outs/", bin.size = c(8))
+Assays(CT1_A1)
+gc()
+# DefaultAssay(CT1_A1) <- "Spatial.002um"
+# CT1_A1 <- NormalizeData(CT1_A1)
+DefaultAssay(CT1_A1) <- "Spatial.008um"
+CT1_A1 <- NormalizeData(CT1_A1)
+# DefaultAssay(CT1_A1) <- "Spatial.016um"
+# CT1_A1 <- NormalizeData(CT1_A1)
+gc()
+# DefaultAssay(CT1_A1) <- "Spatial.008um"
+CT1_A1 <- FindVariableFeatures(CT1_A1)
+CT1_A1 <- ScaleData(CT1_A1)
+gc()
+CT1_A1$orig.ident <- "Contralateral"
+CT1_A1$ID <- "Contralateral"
+
+## Ipsilateral
+IPSI_D1 <- Load10X_Spatial(data.dir = "/media/patrick/JANELSO/Bioinfo/weiner_lab/GENESIO/izzy/visium_cancer_joe/spaceranger/IPSI_D1/outs/", bin.size = c(8))
+Assays(IPSI_D1)
+gc()
+# DefaultAssay(IPSI_D1) <- "Spatial.002um"
+# IPSI_D1 <- NormalizeData(IPSI_D1)
+DefaultAssay(IPSI_D1) <- "Spatial.008um"
+IPSI_D1 <- NormalizeData(IPSI_D1)
+# DefaultAssay(IPSI_D1) <- "Spatial.016um"
+# IPSI_D1 <- NormalizeData(IPSI_D1)
+gc()
+# DefaultAssay(IPSI_D1) <- "Spatial.008um"
+IPSI_D1 <- FindVariableFeatures(IPSI_D1)
+IPSI_D1 <- ScaleData(IPSI_D1)
+gc()
+IPSI_D1$orig.ident <- "Ipsilateral"
+IPSI_D1$ID <- "Ipsilateral"
+
+files.set <- c("CT1","IPSI")
+
+brain.merge <- merge(CT1_A1, y = IPSI_D1, 
+                     add.cell.ids = files.set, 
+                     #merge.data = T
+)
+DefaultAssay(brain.merge) <- "Spatial.008um"
+gc()
+VariableFeatures(brain.merge) <- c(VariableFeatures(CT1_A1), VariableFeatures(IPSI_D1))
+# rm(CT1_A1)
+# rm(IPSI_D1)
+gc()
+
+# we select 50,0000 cells and create a new 'sketch' assay
+brain.merge <- SketchData(
+  object = brain.merge,
+  ncells = 50000,
+  method = "LeverageScore",
+  sketched.assay = "sketch"
+)
+gc()
+
+# switch analysis to sketched cells
+DefaultAssay(brain.merge) <- "sketch"
+
+# perform clustering workflow
+brain.merge <- FindVariableFeatures(brain.merge)
+brain.merge <- ScaleData(brain.merge)
+brain.merge <- RunPCA(brain.merge, assay = "sketch", reduction.name = "pca.sketch")
+ElbowPlot(brain.merge, ndims = 50, reduction = "pca.sketch")
+gc()
+brain.merge <- FindNeighbors(brain.merge, assay = "sketch", reduction = "pca.sketch", dims = 1:50)
+brain.merge <- FindClusters(brain.merge, cluster.name = "seurat_cluster.sketched", resolution = 3)
+brain.merge <- RunUMAP(brain.merge, reduction = "pca.sketch", reduction.name = "umap.sketch", return.model = T, dims = 1:50)
+gc()
+
+brain.merge <- ProjectData(
+  object = brain.merge,
+  assay = "Spatial.008um",
+  full.reduction = "full.pca.sketch",
+  sketched.assay = "sketch",
+  sketched.reduction = "pca.sketch",
+  umap.model = "umap.sketch",
+  dims = 1:50,
+  refdata = list(seurat_cluster.projected = "seurat_cluster.sketched")
+)
+gc()
+
+DefaultAssay(brain.merge) <- "sketch"
+Idents(brain.merge) <- "seurat_cluster.sketched"
+p1 <- DimPlot(brain.merge, reduction = "umap.sketch", label = F) + ggtitle("Sketched clustering (50,000 cells)") + theme(legend.position = "bottom")
+
+# switch to full dataset
+DefaultAssay(brain.merge) <- "Spatial.008um"
+Idents(brain.merge) <- "seurat_cluster.projected"
+p2 <- DimPlot(brain.merge, reduction = "full.umap.sketch", label = T, raster = F) + ggtitle("Projected clustering (full dataset)") + theme(legend.position = "bottom")
+p2
+p1 | p2
+FeaturePlot(brain.merge, features = "Apoe", raster = F)
+
+SpatialDimPlot(brain.merge, label = T, repel = T, label.size = 4)
+
+# Save and Load data
+saveRDS(object = brain.merge, file = "obj_brain.merge.Rds")
+#rm(prot.combined)
+brain.merge <- readRDS("./obj_brain.merge.Rds")
+
+
+SpatialFeaturePlot(brain.merge, features = c("Apoe")
+                   ,slot = "data"
+)
+
+p2 <- SpatialFeaturePlot(brain.merge, features = "Apoe", slot = "counts") #+ ggtitle("Apoe expression (8um)")
+p2
+
+#### plots
+
+DotPlot(brain.merge, features = c( "Apoe",
+                                   "Gfap", "Aqp4", "Lcn2", "Gja1", "Slc1a2", "Fgfr3", "Nkain4",   #astrocytes
+                                   "Flt1", "Cldn5", "Vtn", "Itm2a", "Vwf", "Fam167b", "Bmx", "Clec1b",    #endothelial_cells
+                                   "Slc17a6",  "Slc17a7",  "Nrgn", "Camk2a", "Satb2", "Col5a1", "Sdk2", "Nefm",    #excitatory_neurons
+                                   "Slc32a1",  "Gad1", "Gad2", "Tac1", "Penk", "Sst",  "Npy",  "Mybpc1", "Pvalb", "Gabbr2",   #inhibitory_neurons
+                                   "P2ry12", "Csf1r",  "Cd74", "C3", "Cst3", "Hexb", "C1qa", "Cx3cr1", "Aif1", "Tmem119",  #microglia
+                                   "Olig2",  "Mbp",  "Mobp", "Plp1", "Mog",  "Cldn11", "Myrf", "Galc", "Ermn", "Mag",   #oligodendrocytes
+                                   "Vcan", "Cspg4", "Pdgfra", "Sox10", "Neu4", "Pcdg15", "Gpr37l1", "C1ql1", "Cdo1", "Epn2",   #oligodendrocyte_precursor_cells
+                                   "Ambp",  "Higd1b", "Cox4i2", "Aoc3", "Pde5a",  "Pth1r",  "P2ry14", "Abcc9", "Kcnj8", "Cd248", #Pericytes
+                                   "Ccr2","Cd68","Cd11b","Cd14","Fcgr3", #monocytes
+                                   "Ccr5","Itgam","Trfc","Fcgr1" #macrophage
+                                   
+),
+col.max = 20, #idents = c("62","67","49","47"),
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+#scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+
+p1 <- VlnPlot(brain.merge, features = c("Apoe"),#c("JUN","STAT1", "CCL3", "CCL3L1"),#c("IRF1","IFNG","IFNGR1","IFNGR2"),#c("CD8A","CD4","CD19"),#c("TMEM176A","TMEM176B"), 
+              #split.by = "disease",
+              pt.size = 0.05,
+              raster = F,
+              #ncol = 1,
+              group.by = "ID",
+              #slot = "counts",
+              #add.noise = F,
+              #log = T,
+              #sort = "increasing",
+              idents = c("17","56","16","29","50") #endothelial
+              #c("24","26","30")#microglia
+) + scale_y_continuous(limits = c(0.000,8.5)) + #geom_boxplot(width=0.1, color="black", alpha=0.2) +
+  stat_summary(fun = mean, geom='point', size = 35, colour = "black", shape = 95)
+p1$layers[[2]]$aes_params$alpha <- 0.1
+p1
+
+###############################
+## astrocytes
+
+DotPlot(brain.merge, features = c( "Apoe",
+                                   "Gfap", "Aqp4", "Lcn2", "Gja1", "Slc1a2", "Fgfr3", "Nkain4"   #astrocytes
+),
+col.max = 20, 
+idents = c("7","22","42","16"),
+dot.scale = 10, 
+cluster.idents = T, #group.by = "patho",
+scale = F,
+#split.by = "cohort"
+) + RotatedAxis()
+
+
+## myeloids
+
+DotPlot(brain.merge, features = c( "Apoe",
+                                   "P2ry12", "Csf1r",  "Cd74", "C3", "Cst3", "Hexb", "C1qa", "Cx3cr1", "Aif1", "Tmem119",  #microglia
+                                   "Ccr2","Cd68","Cd11b","Cd14","Fcgr3", #monocytes
+                                   "Ccr5","Itgam","Trfc","Fcgr1" #macrophage                    
+),
+cols = c("blue","blue"),
+col.max = 20, 
+idents = c("17","56","16","29","50"),
+dot.scale = 10, 
+cluster.idents = F, #group.by = "patho",
+#scale = F,
+split.by = "ID"
+) + RotatedAxis()
+
+
+## find and visualize the top gene expression markers for each cluster
+# Create downsampled object to make visualization either
+DefaultAssay(brain.merge) <- "Spatial.008um"
+Idents(brain.merge) <- "seurat_cluster.projected"
+object_subset <- subset(brain.merge, cells = Cells(brain.merge[["Spatial.008um"]]), downsample = 1000)
+
+# Order clusters by similarity
+DefaultAssay(object_subset) <- "Spatial.008um"
+Idents(object_subset) <- "seurat_cluster.projected"
+object_subset <- BuildClusterTree(object_subset, assay = "Spatial.008um", reduction = "full.pca.sketch", reorder = T)
+
+markers <- FindAllMarkers(object_subset, assay = "Spatial.008um", only.pos = TRUE) %>%
+  group_by(cluster) #%>%
+# dplyr::filter(avg_log2FC > 1)%>%
+# slice_head(n = 50)
+write.xlsx(as.data.frame(markers), rowNames = T, file="wilcox_clus_all_markers_IPSI_50pcs_res3.xlsx")
+markers <- FindAllMarkers(object_subset, assay = "Spatial.008um", only.pos = TRUE)
+markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top5
+
+object_subset <- ScaleData(object_subset, assay = "Spatial.008um", features = top5$gene)
+p <- DoHeatmap(object_subset, assay = "Spatial.008um", features = top5$gene, size = 2.5) + theme(axis.text = element_text(size = 5.5)) #+ NoLegend()
+ggsave(filename = "brain.merge_heat_top10_HD.png",
+       plot = p,
+       width = 35,
+       height = 40,
+       #dpi = 600,
+       device = "png")
+
+
+
+Idents(brain.merge) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(brain.merge, idents = c(54:60))
+p <- SpatialDimPlot(brain.merge,
+                    images = "slice1.008um",
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+Idents(brain.merge) <- "seurat_cluster.projected"
+cells <- CellsByIdentities(brain.merge, idents = c(54:60))
+p <- SpatialDimPlot(brain.merge,
+                    images = "slice1.008um.2",
+                    cells.highlight = cells[setdiff(names(cells), "NA")],
+                    cols.highlight = c("#FFFF00", "grey50"), facet.highlight = T, combine = T
+) + NoLegend()
+p
+
+
+
+
+
+
+
+
+
+
+######################################      First attempt (SCTransform --> did not work, too heavy)
+############      control in A1
+# CT1_A1 <- Load10X_Spatial(data.dir = "/media/patrick/JANELSO/Bioinfo/weiner_lab/GENESIO/izzy/visium_cancer_joe/spaceranger/CT1_A1/outs/binned_outputs/square_002um/", slice = "slice1")#, slice = "slice1") # dir should contain filtered_feature_bc_matrix.h5
+# 
+# plot1 <- VlnPlot(CT1_A1, features = "nCount_Spatial", pt.size = 0.0, raster = F) + NoLegend()
+# plot2 <- SpatialFeaturePlot(CT1_A1, features = "nCount_Spatial") + theme(legend.position = "right")
+# wrap_plots(plot1, plot2)
+# # P1 <- plot1 + plot2
+# # P1
+# 
+# ### Normalization  -> standard approaches (such as the LogNormalize() function), which force each data point to have the same underlying ‘size’ after normalization, can be problematic.
+# CT1_A1 <- SCTransform(CT1_A1, assay = "Spatial")
+# 
+# ### Gene expression visualization
+# SpatialFeaturePlot(CT1_A1, features = c("Apoe", "Cd36"), slot = "counts")
+# 
+# # plot <- SpatialFeaturePlot(CT1_A1, features = c("Ttr")) + theme(legend.text = element_text(size = 0),
+# #                                                                legend.title = element_text(size = 20), legend.key.size = unit(1, "cm"))
+# # jpeg(filename = "../output/images/spatial_vignette_ttr.jpg", height = 700, width = 1200, quality = 50)
+# # print(plot)
+# # dev.off()
+# # p1 <- SpatialFeaturePlot(CT1_A1, features = "Ttr", pt.size.factor = 1) ## This will scale the size of the spots. Default is 1.6
+# # p2 <- SpatialFeaturePlot(CT1_A1, features = "Ttr", alpha = c(0.1, 1)) ## minimum and maximum transparency, setting to alpha c(0.1, 1) to downweight the transparency of points with lower expression
+# # p1 + p2
+# 
+# 
+# #### Dimensionality reduction, clustering, and visualization
+# CT1_A1 <- RunPCA(CT1_A1, assay = "SCT")
+# Elbowplot(CT1_A1, npcs = 50)
+# CT1_A1 <- FindNeighbors(CT1_A1, reduction = "pca", dims = 1:30)
+# CT1_A1 <- FindClusters(CT1_A1)
+# CT1_A1 <- RunUMAP(CT1_A1, reduction = "pca", dims = 1:30)
+# 
+# p1 <- DimPlot(CT1_A1, reduction = "umap", label = TRUE)
+# p2 <- SpatialDimPlot(CT1_A1, label = TRUE, label.size = 3)
+# p1 + p2
+# SpatialDimPlot(CT1_A1, cells.highlight = CellsByIdentities(
+#   object = CT1_A1, idents = c(2, 1, 4, 3, 5, 8)), facet.highlight = TRUE, ncol = 3)
+# 
+# 
+# ####### Identification of Spatially Variable Features
+# de_markers <- FindMarkers(CT1_A1, ident.1 = 5, ident.2 = 6)
+# SpatialFeaturePlot(object = CT1_A1, features = rownames(de_markers)[1:3], alpha = c(0.1, 1), ncol = 3)
+# ## An alternative approach, implemented in FindSpatiallyVariables(), is to search for features exhibiting spatial patterning in the absence of pre-annotation
+# ## The default method (method = 'markvariogram), is inspired by the Trendsceek, which models spatial transcriptomics data as a mark point process and computes a ‘variogram’, which identifies genes whose expression level is dependent on their spatial location
+# CT1_A1 <- FindSpatiallyVariableFeatures(CT1_A1, assay = "SCT", features = VariableFeatures(CT1_A1)[1:1000],
+#                                        selection.method = "moransi")
+# # Now we visualize the expression of the top 6 features identified by this measure
+# top.features <- head(SpatiallyVariableFeatures(CT1_A1, selection.method = "moransi"), 6)
+# SpatialFeaturePlot(CT1_A1, features = top.features, ncol = 3, alpha = c(0.1, 1))
+# 
+# 
+# 
+# 
+# 
+# ###########        control in A1 and IPSI in D1
+# CT1_A1 <- Load10X_Spatial(data.dir = "/media/patrick/JANELSO/Bioinfo/weiner_lab/GENESIO/izzy/visium_cancer_joe/spaceranger/CT1_A1/outs/binned_outputs/square_008um/", slice = "slice1") #%>% SCTransform(assay = "Spatial")
+# gc()
+# CT1_A1 <- SCTransform(CT1_A1, assay = "Spatial")
+# gc()
+# IPSI_D1 <- Load10X_Spatial(data.dir = "/media/patrick/JANELSO/Bioinfo/weiner_lab/GENESIO/izzy/visium_cancer_joe/spaceranger/IPSI_D1/outs/binned_outputs/square_002um/", slice = "slice1") #%>% SCTransform(assay = "Spatial")
+# gc()
+# IPSI_D1 <- SCTransform(IPSI_D1, assay = "Spatial")
+# gc()
+# 
+# plot1 <- SpatialFeaturePlot(CT1_A1, features = "Apoe", slot = "counts") #+ theme(legend.position = "right")
+# plot2 <- SpatialFeaturePlot(IPSI_D1, features = "Apoe", slot = "counts") #+ theme(legend.position = "right")
+# wrap_plots(plot1, plot2)
+# 
+# 
+# brain.merge <- merge(CT1_A1, IPSI_D1)
+# 
+# DefaultAssay(brain.merge) <- "SCT"
+# VariableFeatures(brain.merge) <- c(VariableFeatures(CT1_A1), VariableFeatures(IPSI_D1))
+# brain.merge <- RunPCA(brain.merge, verbose = FALSE)
+# Elbowplot(brain.merge, npcs = 50)
+# brain.merge <- FindNeighbors(brain.merge, dims = 1:30)
+# brain.merge <- FindClusters(brain.merge)
+# brain.merge <- RunUMAP(brain.merge, dims = 1:30)
+# 
+# DimPlot(brain.merge, reduction = "umap", group.by = c("ident", "orig.ident"))
+# 
+# SpatialDimPlot(brain.merge)
+# 
+# SpatialFeaturePlot(brain.merge, features = c("Apoe", "Cd36"))
+# 
+# 
+# # Save and Load data
+# saveRDS(object = prot.combined, file = "obj_unintegrated_CSF.Rds")
+# #rm(prot.combined)
+# prot.combined <- readRDS("./obj_unintegrated_CSF.Rds")
+# 
+# 
+# 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
